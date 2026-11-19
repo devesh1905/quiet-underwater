@@ -155,7 +155,8 @@ fun WaterLockScene(
     val container = context.container
     val battery by container.device.battery.collectAsStateWithLifecycle()
     val swatches = rememberPaintingSwatches(ctx.art?.imagePath)
-    val host = rememberWaterHost()
+    // The water's height is the battery level, linearly: 71% fills 71% of the screen.
+    val host = rememberWaterHost().also { it.fullTop = LOCK_FULL_TOP; it.emptyBottom = LOCK_EMPTY_BOTTOM }
     val driver = remember(host) { WaterLockDriver(host) }
     val still = Q.reducedMotion || !ctx.animate
     val resumed = LocalLifecycleOwner.current.lifecycle.currentStateAsState().value.isAtLeast(Lifecycle.State.RESUMED)
@@ -166,7 +167,7 @@ fun WaterLockScene(
     var worldH by remember { mutableIntStateOf(0) }
     var raftLine by remember { mutableStateOf(Float.NaN) }
     val waterLevel = if (np != null && !raftLine.isNaN() && worldH > 0)
-        (1f - (raftLine / worldH - WaterHost.TOP) / (WaterHost.BOTTOM - WaterHost.TOP)).coerceIn(0f, 1f)
+        (1f - (raftLine / worldH - LOCK_FULL_TOP) / (LOCK_EMPTY_BOTTOM - LOCK_FULL_TOP)).coerceIn(0f, 1f)
     else battery.level
     // The last song, so the music layout can fade out with its own cover when the music stops.
     val lastSong = remember { mutableStateOf(np) }
@@ -234,7 +235,7 @@ fun WaterLockScene(
 
     // The resting waterline, worked out exactly as the engine does (WaterHost.levelToY), so the
     // clock and the cover are placed right on the first frame instead of gliding in.
-    val rest = if (worldH > 0) worldH * (WaterHost.TOP + (WaterHost.BOTTOM - WaterHost.TOP) * (1f - waterLevel.coerceIn(0f, 1f))) else 0f
+    val rest = if (worldH > 0) worldH * (LOCK_FULL_TOP + (LOCK_EMPTY_BOTTOM - LOCK_FULL_TOP) * (1f - waterLevel.coerceIn(0f, 1f))) else 0f
 
     QuietTheme(dark = true, reducedMotion = Q.reducedMotion) {
         CompositionLocalProvider(LocalWater provides host) {
@@ -337,7 +338,8 @@ private fun WaterIdle(ctx: LockContext, rest: Float, tint: Color, onArtLongPress
         // water, so the ripples and the swell bend it; when the clock rides high, it sits at the line.
         // The painting's label (top, px in this box): the reflection fades out before it, never over it.
         var labelTop by remember { mutableStateOf(Float.MAX_VALUE) }
-        if (clockH > 0) {
+        // High water reaches the clock block: no mirror then, or it would sit on top of the date.
+        if (clockH > 0 && rest >= top + clockH + gap * 0.5f) {
             val reflTop = rest + (rest - (top + clockH)).coerceIn(2f, gap)
             val fade = with(density) { 36.dp.toPx() }
             val room = labelTop - with(density) { 10.dp.toPx() } - reflTop
@@ -654,3 +656,7 @@ private fun settling(target: Float, ready: Boolean, reduced: Boolean): Float {
     }
     return if (!settled) target else a.value
 }
+
+/** Linear water level on the lock screen: 100% reaches the top, 0% is empty. */
+private const val LOCK_FULL_TOP = 0f
+private const val LOCK_EMPTY_BOTTOM = 1f

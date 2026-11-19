@@ -60,7 +60,7 @@ fun ChargeLine(ctx: LockContext, ink: Color, modifier: Modifier = Modifier, alig
                 contentAlignment = when (alignment) { Alignment.Start -> Alignment.CenterStart; else -> Alignment.Center },
                 label = "chargeTier",
             ) { t -> BasicText(t.label, style = style, maxLines = 1) }
-            BasicText(" · $pct%", style = style.copy(color = ink.copy(alpha = 0.6f)), maxLines = 1)
+            BasicText(" · " + app.quiet.launcher.core.platform.HyperCharge.percent(pct, last.charging), style = style.copy(color = ink.copy(alpha = 0.6f)), maxLines = 1)
         }
     }
 }

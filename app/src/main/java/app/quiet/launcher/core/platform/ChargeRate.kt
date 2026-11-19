@@ -32,7 +32,7 @@ import kotlin.math.exp
  * Thresholds: under 7.5 W slow, under 18 W normal, under 30 W fast, 30 W and up rapid.
  */
 object ChargeRate {
-    enum class Tier(val label: String) {
+    enum class Tier(private val base: String) {
         /** Not plugged in. */
         NONE(""),
         SLOW("Slow charging"),
@@ -43,10 +43,13 @@ object ChargeRate {
         FULL("Charged");
 
         val charging: Boolean get() = this == SLOW || this == NORMAL || this == FAST || this == RAPID
+
+        /** The words to show: HyperOS's own charger type when the phone reports one, else the measured tier. */
+        val label: String get() = HyperCharge.label(this) ?: base
     }
 
     /** Lower watt bound of SLOW, NORMAL, FAST, RAPID. */
-    private val BOUNDS = floatArrayOf(0f, 7.5f, 18f, 30f)
+    private val BOUNDS = floatArrayOf(0f, 5f, 15f, 30f)
     private val TIERS = arrayOf(Tier.SLOW, Tier.NORMAL, Tier.FAST, Tier.RAPID)
 
     /** Typical Li-ion cell voltage when the battery doesn't report one. */
@@ -98,7 +101,7 @@ object ChargeRate {
         private val tauS: Float = 6f,
         private val band: Float = 0.12f,
         private val dwellMs: Long = 5000L,
-        private val taperLevel: Float = 0.9f,
+        private val taperLevel: Float = 0.6f,
     ) {
         var smoothed = Float.NaN
             private set
@@ -108,8 +111,9 @@ object ChargeRate {
         private var candidate = Tier.NORMAL
         private var candidateSince = 0L
         private var started = false
+        private var peak = -1
 
-        fun reset() { smoothed = Float.NaN; lastAt = 0L; started = false; tier = Tier.NORMAL; candidate = Tier.NORMAL }
+        fun reset() { peak = -1; smoothed = Float.NaN; lastAt = 0L; started = false; tier = Tier.NORMAL; candidate = Tier.NORMAL }
 
         /** Feeds one sample (watts into the battery; NaN = unknown) at [nowMs]; returns the tier. */
         fun update(watts: Float, level: Float, nowMs: Long = SystemClock.uptimeMillis()): Tier {
@@ -123,6 +127,9 @@ object ChargeRate {
             }
             val w = smoothed
             var want = if (w.isNaN()) tier else withBand(w)
+            // A fast charger stays "fast" for the whole plug-in while the phone tapers or warms up.
+            if (!w.isNaN() && TIERS.indexOf(want) > peak) peak = TIERS.indexOf(want)
+            if (peak >= TIERS.indexOf(Tier.FAST) && TIERS.indexOf(want) < TIERS.indexOf(Tier.FAST)) want = Tier.FAST
             if (want == Tier.SLOW && level >= taperLevel) want = Tier.NORMAL
             if (!started) {
                 // The first real reading sets the tier at once (no flicker from a default).
@@ -153,9 +160,64 @@ object ChargeRate {
  * battery voltage, status (FULL -> Charged) and the charger's advertised watts (a first guess) from
  * BATTERY_CHANGED. Nothing runs while unplugged or out of the composition.
  */
+/**
+ * Xiaomi HyperOS / MIUI announce the charger themselves (sticky system broadcasts): the quick-charge type
+ * (0 none, 1 quick, 2 fast, 3 super, 4 hyper) with the charger's max watts, and the battery's
+ * hundredths while it charges. When present they name the charge exactly as the system does
+ * ("Super fast charging · 90W", "73.39%"); other phones fall back to the measured tier.
+ */
+object HyperCharge {
+    private const val ACTION_TYPE = "miui.intent.action.ACTION_QUICK_CHARGE_TYPE"
+    private const val ACTION_DECIMAL = "miui.intent.action.ACTION_SOC_DECIMAL"
+    val type = androidx.compose.runtime.mutableIntStateOf(-1)
+    val powerMax = androidx.compose.runtime.mutableIntStateOf(0)
+    val decimal = androidx.compose.runtime.mutableIntStateOf(-1)
+    @Volatile private var registered = false
+
+    fun ensure(ctx: Context) {
+        if (registered) return
+        registered = true
+        val app = ctx.applicationContext
+        val rx = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) {
+                when (i.action) {
+                    ACTION_TYPE -> {
+                        type.intValue = i.getIntExtra("miui.intent.extra.quick_charge_type", -1)
+                        powerMax.intValue = i.getIntExtra("miui.intent.extra.POWER_MAX", 0)
+                    }
+                    ACTION_DECIMAL -> decimal.intValue = i.getIntExtra("miui.intent.extra.soc_decimal", -1)
+                }
+            }
+        }
+        for (a in arrayOf(ACTION_TYPE, ACTION_DECIMAL)) runCatching {
+            ContextCompat.registerReceiver(app, rx, IntentFilter(a), ContextCompat.RECEIVER_EXPORTED)?.let { rx.onReceive(app, it) }
+        }
+    }
+
+    fun label(tier: ChargeRate.Tier): String? {
+        if (!tier.charging) return null
+        val t = type.intValue
+        val w = powerMax.intValue
+        return when {
+            t >= 3 -> if (w > 0) "Super fast charging · ${w}W" else "Super fast charging"
+            t == 2 -> "Fast charging"
+            t == 1 -> "Quick charging"
+            t == 0 -> "Charging"   // an old charger or power bank: HyperOS says just "Charging"
+            else -> null
+        }
+    }
+
+    /** "73.39%" while HyperOS super-charges and reports hundredths, else "73%". */
+    fun percent(levelPct: Int, charging: Boolean): String {
+        val d = decimal.intValue
+        return if (charging && type.intValue >= 3 && d in 0..99 && levelPct < 100) "$levelPct.${d.toString().padStart(2, '0')}%" else "$levelPct%"
+    }
+}
+
 @Composable
 fun rememberChargeTier(plugged: Boolean, level: Float): State<ChargeRate.Tier> {
     val ctx = LocalContext.current
+    remember { HyperCharge.ensure(ctx); 0 }
     val state = remember { mutableStateOf(if (plugged) ChargeRate.Tier.NORMAL else ChargeRate.Tier.NONE) }
     val meter = remember { ChargeRate.Meter() }
     val levelNow = rememberUpdatedState(level)
@@ -177,18 +239,37 @@ fun rememberChargeTier(plugged: Boolean, level: Float): State<ChargeRate.Tier> {
             ?.let { rx.onReceive(ctx, it) }
         onDispose { runCatching { ctx.unregisterReceiver(rx) } }
     }
+    val ccWin = remember { LongArray(3) }   // window start ms, counter µAh, last amps (float bits)
     LaunchedEffect(plugged) {
         if (!plugged) return@LaunchedEffect
+        ccWin.fill(0L)
         var n = 0
         while (true) {
             val level = levelNow.value
             val full = volts[2] > 0f || level >= 0.999f
             if (full) state.value = ChargeRate.Tier.FULL
             else {
-                var w = ChargeRate.watts(ChargeRate.readAmps(ctx), volts[0])
+                // CURRENT_NOW under-reports on some phones (HyperOS: ~0.6 A while the charge counter
+                // shows 1.5 A), so the counter's rise over ~15 s wins when it is available.
+                val bm = ctx.getSystemService(android.os.BatteryManager::class.java)
+                val cc = runCatching { bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CHARGE_COUNTER) ?: 0 }.getOrDefault(0)
+                val now = android.os.SystemClock.uptimeMillis()
+                var counterAmps = Float.NaN
+                if (cc > 0) {
+                    if (ccWin[0] <= 0L) { ccWin[0] = now; ccWin[1] = cc.toLong() }
+                    else if (now - ccWin[0] >= 15_000L) {
+                        val dUah = cc - ccWin[1]
+                        if (dUah > 0) counterAmps = dUah * 3.6f / ((now - ccWin[0]) / 1000f) / 1000f
+                        ccWin[0] = now; ccWin[1] = cc.toLong(); ccWin[2] = java.lang.Float.floatToIntBits(counterAmps).toLong()
+                    } else if (ccWin[2] != 0L) counterAmps = java.lang.Float.intBitsToFloat(ccWin[2].toInt())
+                }
+                val nowAmps = ChargeRate.readAmps(ctx)
+                val amps = when { counterAmps.isNaN() -> nowAmps; nowAmps.isNaN() -> counterAmps; else -> maxOf(counterAmps, nowAmps) }
+                var w = ChargeRate.watts(amps, volts[0])
                 // No measurement yet (or none on this phone): the charger's advertised watts, if any.
                 if (w.isNaN() && volts[1] > 0f) w = volts[1]
                 state.value = meter.update(w, level)
+                if (n % 10 == 0) android.util.Log.d("QuietCharge", "rate w=$w smoothed=${meter.smoothed} tier=${state.value} level=$level")
             }
             delay(if (n++ < 4) 1000L else 2000L)
         }

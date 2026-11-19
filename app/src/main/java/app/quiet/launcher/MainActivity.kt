@@ -213,7 +213,8 @@ private fun LauncherRoot(homeSignal: Int, openNotifications: Int) {
             val art by ctx.container.art.today.collectAsStateWithLifecycle()
             val swatches = app.quiet.launcher.feature.lock.charge.rememberPaintingSwatches(art?.imagePath)
             app.quiet.launcher.feature.underwater.engine.WaterEngine(
-                water, battery.level, battery.charging, swatches, app.quiet.launcher.designsystem.Q.reducedMotion,
+                // Home's water sits at a fixed level so the dock never moves; the lock screen follows the battery.
+                water, 0.55f, battery.charging, swatches, app.quiet.launcher.designsystem.Q.reducedMotion,
                 visible = true, // overlays are frosted glass and the player floats on the water: it runs on under them
             )
             // Home is where the painting comes from in this edition (classic gets it from its lock screen).

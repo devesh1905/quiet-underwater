@@ -151,7 +151,10 @@ class WaterHost internal constructor() {
     /** Is (x, y) under the water? */
     fun isUnder(x: Float, y: Float): Boolean = y > waterY(x)
     /** Where a battery level puts the resting waterline (px, world): 100% just under the date, 0% near the bottom. */
-    fun levelToY(l: Float): Float = h * (TOP + (BOTTOM - TOP) * (1f - l.coerceIn(0f, 1f)))
+    /** Where 100% and 0% sit (fractions of the height). Home keeps the clock dry; the lock's Water theme is linear. */
+    var fullTop = TOP
+    var emptyBottom = BOTTOM
+    fun levelToY(l: Float): Float = h * (fullTop + (emptyBottom - fullTop) * (1f - l.coerceIn(0f, 1f)))
 
     /** A splash in the water at (x, y): rings spread in the grid (or the surface is kicked from above). [strength] ~1. */
     fun ripple(x: Float, y: Float, strength: Float = 1f) {

@@ -507,7 +507,7 @@ fun UnderwaterHomeContent(
             ) { label ->
                 if (label.isNotEmpty()) BasicText("$label · ", style = style.copy(color = if (label == ChargeRate.Tier.FULL.label) c.ink.copy(alpha = 0.86f) else c.muted))
             }
-            BasicText("${(batteryLevel * 100).toInt()}%", style = style)
+            BasicText(app.quiet.launcher.core.platform.HyperCharge.percent((batteryLevel * 100).toInt(), tier.charging), style = style)
         }
 
         // ---- the glass dock: favourites on a slab resting on the water. It sits where the waterline
