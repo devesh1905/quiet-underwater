@@ -14,8 +14,8 @@ android {
         applicationId = "app.quiet.launcher"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "0.6.0"
+        versionCode = 10
+        versionName = "0.6.1"
     }
 
     // Two editions from one codebase: classic Quiet, and Quiet Underwater (water and glass), a separate app.
