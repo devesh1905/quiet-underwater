@@ -217,14 +217,22 @@ private fun LauncherRoot(homeSignal: Int, openNotifications: Int) {
                 water, 0.55f, battery.charging, swatches, app.quiet.launcher.designsystem.Q.reducedMotion,
                 visible = true, // overlays are frosted glass and the player floats on the water: it runs on under them
             )
+            // Home hangs the painting framed on a gallery wall; away from Home it opens out to full bleed.
+            val gallery = remember { app.quiet.launcher.feature.underwater.GalleryHang() }
+            gallery.front = { (1f - kotlin.math.abs(pager.currentPage + pager.currentPageOffsetFraction - 1f)).coerceIn(0f, 1f) }
+            // Home in front and idle: the water keeps a slow, low-rate life (swell, caustics).
+            LaunchedEffect(water) {
+                snapshotFlow { overlay == Overlay.None && !playerOpen && sheetApp == null && pager.settledPage == 1 && pager.currentPageOffsetFraction == 0f }
+                    .collect { water.ambient = it }
+            }
             // Home is where the painting comes from in this edition (classic gets it from its lock screen).
             LaunchedEffect(water) { runCatching { ctx.container.art.refreshIfStale() } }
             LaunchedEffect(water) { snapshotFlow { pager.currentPage + pager.currentPageOffsetFraction }.collect { water.wake() } }
             // Above the world (not bent or frosted by it): crisp cards over frosted glass, lifted labels.
             val top = app.quiet.launcher.feature.underwater.rememberWaterTop()
-            CompositionLocalProvider(app.quiet.launcher.feature.underwater.LocalWaterTop provides top) {
+            CompositionLocalProvider(app.quiet.launcher.feature.underwater.LocalWaterTop provides top, app.quiet.launcher.feature.underwater.LocalGallery provides gallery) {
                 Box(Modifier.fillMaxSize().waterWorld(water)) {
-                    app.quiet.launcher.feature.underwater.WaterBackdrop(art?.imagePath, swatches, covered = { playerCovers })
+                    app.quiet.launcher.feature.underwater.WaterBackdrop(art?.imagePath, swatches, covered = { playerCovers }, gallery = gallery)
                     if (app.quiet.launcher.feature.underwater.engine.WaterDebug.hide and 8 == 0) pages()
                 }
                 app.quiet.launcher.feature.underwater.WaterTopLayer(top)

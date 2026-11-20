@@ -68,7 +68,7 @@ internal class WaterGpu {
         val amp = 200f * dp
         var vMax = 0f
         for (i in 0 until 96) {
-            val v = (0.5f + s.surf.h[i] / amp).coerceIn(0f, 1f)
+            val v = (0.5f + (s.surf.h[i] + s.ambY(i / 95f)) / amp).coerceIn(0f, 1f)
             if (v > vMax) vMax = v
             surfTex.put(i, v)
         }
@@ -115,6 +115,7 @@ internal class WaterGpu {
         sh.setFloatUniform("uRefr", 34f * dp)
         sh.setFloatUniform("uCaus", 9f)
         sh.setFloatUniform("uCalm", if (c.still) 0.35f else 1f)
+        sh.setFloatUniform("uAmb", if (c.still) 0f else s.amb)
         for (i in 0 until WaterSim.MAX_DROPS) {
             val vy = s.dropVy[i]
             drops[i * 4] = s.dropX[i]; drops[i * 4 + 1] = s.dropY[i]; drops[i * 4 + 2] = s.dropR[i]
@@ -144,7 +145,7 @@ internal class WaterGpu {
             // Rotation as cos/sin, and the bounding radius of the squashed box.
             val sq = 1f + b.squash[i]
             val r = kotlin.math.hypot(maxOf(b.hw[i] * sq, 0.5f), maxOf(b.hh[i] / sq, 0.5f))
-            gd[o] = kotlin.math.cos(b.rot[i]); gd[o + 1] = kotlin.math.sin(b.rot[i]); gd[o + 2] = r; gd[o + 3] = 0f
+            gd[o] = kotlin.math.cos(b.rot[i]); gd[o + 1] = kotlin.math.sin(b.rot[i]); gd[o + 2] = r; gd[o + 3] = if (b.clear[i]) 1f else 0f
             if (on) {
                 count = i + 1
                 val e = r + reach
@@ -284,8 +285,9 @@ fun WaterEngine(host: WaterHost, level: Float, charging: Boolean, palette: IntAr
                     host.wakeCh.receive()
                     continue
                 }
-                // A lone redraw (a wake with nothing moving) keeps the low-power sensor.
-                if (host.reason != 1) host.awake = true
+                // A lone redraw (a wake with nothing moving) keeps the sensor as it is; the ambient
+                // life uses the low-power one (a tilt still wakes it).
+                when (host.reason) { 1 -> {}; 7 -> if (host.awake) host.awake = false; else -> if (!host.awake) host.awake = true }
                 androidx.compose.runtime.withFrameNanos { t ->
                     val dt = if (last == 0L) 1f / 60f else ((t - last) / 1e9f).coerceIn(0.001f, 0.05f)
                     last = t
@@ -295,7 +297,8 @@ fun WaterEngine(host: WaterHost, level: Float, charging: Boolean, palette: IntAr
                 // 30 fps for the idle shimmer (and the display may drop its rate); a wake (touch) cuts the wait short.
                 val full = host.fullRate(SystemClock.uptimeMillis())
                 if (full == slow) { slow = !full; voteFrameRate(view, slow) }
-                if (!full) withTimeoutOrNull(24) { host.wakeCh.receive() }
+                // The ambient life alone: ~25 fps.
+                if (!full) withTimeoutOrNull(if (host.reason == 7) 34L else 24L) { host.wakeCh.receive() }
             }
         } finally {
             if (slow) voteFrameRate(view, false)

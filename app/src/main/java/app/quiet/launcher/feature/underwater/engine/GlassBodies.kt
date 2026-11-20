@@ -35,6 +35,8 @@ internal class GlassBodies(val n: Int) {
     val rigid = BooleanArray(n)
     /** Condenses from alpha 0 on its first target (else appears at its target alpha). */
     val growIn = BooleanArray(n)
+    /** Clear glass: only the bending at its edge shows (see GlassStyle.clear). */
+    val clear = BooleanArray(n)
 
     // State: centre, half size, each with velocity
     val x = FloatArray(n); val vx = FloatArray(n)
@@ -63,7 +65,7 @@ internal class GlassBodies(val n: Int) {
             used[i] = true; fresh[i] = true; held[i] = false
             group[i] = 0; lens[i] = 0f; frost[i] = 0f; floats[i] = false; stir[i] = false
             tAlpha[i] = 1f; alpha[i] = 0f; valpha[i] = 0f
-            k[i] = 260f; zeta[i] = 0.62f; rigid[i] = false; growIn[i] = true
+            k[i] = 260f; zeta[i] = 0.62f; rigid[i] = false; growIn[i] = true; clear[i] = false
             squash[i] = 0f; vsquash[i] = 0f; bob[i] = 0f; vbob[i] = 0f; rot[i] = 0f; vrot[i] = 0f
             tw[i] = 0f; th[i] = 0f
             for (j in 0 until n) { touching[i][j] = false; touching[j][i] = false }

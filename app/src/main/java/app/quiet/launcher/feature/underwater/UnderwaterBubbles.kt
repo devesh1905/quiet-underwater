@@ -80,10 +80,12 @@ private const val FREE = 4   // thrown: gravity in air, buoyancy in water, bounc
 private const val HOP = 5    // springing home along its own path (after the surface, or out of the water)
 private const val GONE = 6
 
-private val RISING = GlassStyle(corner = 999.dp, bevel = 12.dp, lens = 0.55f, stir = true, stiffness = 1100f, damping = 0.85f)
-private val RESTING = GlassStyle(corner = 999.dp, bevel = 12.dp, lens = 0.55f, stiffness = 210f, damping = 0.42f)
+// The bubble is a thin ring of water around the app's icon: clear glass (only the bending at its
+// edge shows; no rim, specular, dome shading or shadow) with almost no magnification.
+private val RISING = GlassStyle(corner = 999.dp, bevel = 9.dp, lens = 0.1f, stir = true, stiffness = 1100f, damping = 0.85f, clear = true)
+private val RESTING = GlassStyle(corner = 999.dp, bevel = 9.dp, lens = 0.1f, stiffness = 210f, damping = 0.42f, clear = true)
 /** Moving under our own physics: a stiff follow, so the engine's squash shows every bounce. */
-private val FLYING = GlassStyle(corner = 999.dp, bevel = 12.dp, lens = 0.55f, stir = true, stiffness = 1300f, damping = 0.72f)
+private val FLYING = GlassStyle(corner = 999.dp, bevel = 9.dp, lens = 0.1f, stir = true, stiffness = 1300f, damping = 0.72f, clear = true)
 /** Near another bubble while held: the merge group, so the two fuse like drops (the engine plays Plunk). */
 private const val MERGE_GROUP = 3
 private const val PI_F = Math.PI.toFloat()
@@ -435,9 +437,10 @@ internal fun BubbleLayer(dock: DockState, active: Boolean, reduced: Boolean, mod
         while (true) {
             val busy = bubbles.any {
                 it.id >= 0 && (it.mode == RISE || it.mode == FREE || it.mode == HOP || it.mode == HELD ||
-                    it.pulse > 0.002f || it.squash > 0.002f || abs(it.vspin) > 0.02f || (it.mode == REST && abs(it.spin) > 0.01f))
+                    it.pulse > 0.002f || it.squash > 0.002f || abs(it.vspin) > 0.02f || (it.mode == REST && abs(wrapPi(it.spin)) > 0.01f))
             }
             if (!busy) { last = 0L; acc = 0f; kick.receive(); continue }
+            if (app.quiet.launcher.feature.underwater.engine.WaterDebug.logFeel) bubbleDiag(bubbles)
             withFrameNanos { t ->
                 val dt = if (last == 0L) 1f / 120f else ((t - last) / 1e9f).coerceIn(0.001f, 0.05f)
                 last = t
@@ -491,6 +494,9 @@ internal fun BubbleLayer(dock: DockState, active: Boolean, reduced: Boolean, mod
                             b.vspin += (-a * 9f - 3.6f * b.vspin) * step
                         } else b.vspin *= exp(-step * (if (b.wet) 2.4f else 0.7f))
                         b.spin += b.vspin * step
+                        // Keep the roll in -pi..pi: an icon that rolled a full turn rests upright at 2pi,
+                        // which the idle check must read as upright (it once kept this loop at 120 Hz forever).
+                        if (abs(b.spin) > PI_F) b.spin = wrapPi(b.spin)
                         if (b.mode != RISE && b.mode != HELD) aim(b, b.x, b.y)
                     }
                 }
@@ -625,6 +631,11 @@ internal fun BubbleLayer(dock: DockState, active: Boolean, reduced: Boolean, mod
                         } else letGo(b, v, cancelled)
                     })
             }
+        }
+        // How many each holds: small plain text centred under its bubble, upright (it never rolls),
+        // drawn after every bubble so a neighbour can never cover it.
+        for (b in bubbles) key("n" + b.uid) {
+            if (b.mode != CARD && b.mode != GONE && !hidden && b.keys.size > 1) BubbleCount(host, dock, b, r, b.keys.size)
         }
     }
     // Above the world: the card's tint and words (crisp over its frosted glass).
@@ -839,10 +850,7 @@ private fun BubbleFace(
                 host.tick
                 val id = b.id
                 if (id >= 0) {
-                    // Behind the dock's slab its own lens is not drawn (the slab is the glass there):
-                    // the icon keeps the lens's magnification so it reads as the same bubble.
-                    val m = 1f + 0.3f * inDock(host, dock, host.glassCx(id), host.glassCy(id), r)
-                    scaleX = m * host.glassHalfW(id) / r; scaleY = m * host.glassHalfH(id) / r
+                    scaleX = host.glassHalfW(id) / r; scaleY = host.glassHalfH(id) / r
                     rotationZ = Math.toDegrees((host.glassRotRad(id) + b.spin).toDouble()).toFloat()
                 }
                 alpha = if (id < 0) 1f else host.glassAlphaNow(id)
@@ -885,54 +893,27 @@ private fun BubbleFace(
             },
         contentAlignment = Alignment.Center,
     ) {
-        val sheen = Color(0xFF9FD3E0)
         Canvas(Modifier.fillMaxSize()) {
             val rr = size.minDimension / 2f
             val ctr = Offset(size.width / 2f, size.height / 2f)
-            host.tick
-            val k = if (b.id >= 0) inDock(host, dock, host.glassCx(b.id), host.glassCy(b.id), r) else 0f
-            // No glass to spare (all bodies in use): a drawn ring keeps it a bubble.
-            if (glassless) {
-                drawCircle(c.ink.copy(alpha = 0.08f), rr, ctr)
-                drawCircle(c.ink.copy(alpha = 0.5f), rr, ctr, style = Stroke(1.dp.toPx()))
-            }
+            // No glass to spare (all bodies in use): a faint hairline keeps it a bubble.
+            if (glassless) drawCircle(c.ink.copy(alpha = 0.28f), rr * 0.96f, ctr, style = Stroke(0.8.dp.toPx()))
             val ic = icon
             if (ic != null) {
-                // The icon inside the glass: the shader's lens bends it, the water tints it a touch.
-                val s = iconPx.toFloat()
-                val tl = Offset(ctr.x - s / 2f, ctr.y - s / 2f)
+                // The app's own icon, flat, its colours a little quieted for the dark room. It rolls
+                // with the bubble (this layer rotates); the water around it does the rest.
+                val sz = iconPx.toFloat()
+                val tl = Offset(ctr.x - sz / 2f, ctr.y - sz / 2f)
                 val clip = Path().apply { addOval(Rect(ctr, rr * 0.8f)) }
                 clipPath(clip) {
                     drawImage(ic, srcOffset = IntOffset.Zero, srcSize = IntSize(ic.width, ic.height),
-                        dstOffset = IntOffset(tl.x.roundToInt(), tl.y.roundToInt()), dstSize = IntSize(s.roundToInt(), s.roundToInt()), alpha = 0.94f)
-                    drawCircle(Brush.verticalGradient(listOf(sheen.copy(alpha = 0.10f), Color(0xFF0B2A33).copy(alpha = 0.22f)), startY = ctr.y - rr, endY = ctr.y + rr), rr, ctr)
+                        dstOffset = IntOffset(tl.x.roundToInt(), tl.y.roundToInt()), dstSize = IntSize(sz.roundToInt(), sz.roundToInt()),
+                        alpha = 0.96f, colorFilter = QuietIcon)
                 }
-            }
-            if (k > 0.01f) {
-                // Seen through the slab: the bubble's own skin, a rim and a glint, drawn for it.
-                // (This layer is magnified with the icon: the skin is drawn at the bubble's true size.)
-                val sk = rr / (1f + 0.3f * k)
-                drawCircle(Color.White.copy(alpha = 0.07f * k), sk * 0.97f, ctr)
-                drawCircle(Color.White.copy(alpha = 0.42f * k), sk * 0.95f, ctr, style = Stroke(1.2.dp.toPx()))
-                drawCircle(Color.White.copy(alpha = 0.55f * k), sk * 0.13f, ctr + Offset(-sk * 0.42f, -sk * 0.46f))
-            }
-            if (count > 1) {
-                // How many it holds: a small dark bead sitting on the rim, outside the lens (it stays crisp).
-                val bc = Offset(ctr.x + rr * 0.8f, ctr.y - rr * 0.8f)
-                val br = 9.5.dp.toPx()
-                drawCircle(Color(0xE6101112), br, bc)
-                drawCircle(c.ink.copy(alpha = 0.55f), br, bc, style = Stroke(0.8.dp.toPx()))
             }
         }
         if (icon == null) BasicText(letter, style = QType.labelTitle(18.sp).copy(color = c.ink), maxLines = 1)
-        if (count > 1) {
-            val off = with(density) { (r * 0.8f).toDp() }
-            BasicText(
-                if (count > 9) "9+" else "$count",
-                style = QType.secondary(12.sp).copy(color = c.ink, textAlign = TextAlign.Center),
-                modifier = Modifier.offset(x = off, y = -off).width(19.dp),
-            )
-        }
+
     }
 }
 
@@ -1048,4 +1029,43 @@ private fun inDock(host: WaterHost, dock: DockState, x: Float, y: Float, r: Floa
     if (dock.dockRight <= dock.dockLeft || dock.slabBottom <= dock.slabTop) return 0f
     val inset = minOf(minOf(x - dock.dockLeft, dock.dockRight - x), minOf(y - dock.slabTop, dock.slabBottom - y))
     return ((inset - r * 0.4f) / (r * 0.9f)).coerceIn(0f, 1f)
+}
+
+private var diagN = 0
+private var diagT = 0L
+/** Test knob (logfeel): which bubbles keep the physics loop running, once every 5 s. */
+private fun bubbleDiag(bubbles: List<Bubble>) {
+    diagN++
+    val now = android.os.SystemClock.uptimeMillis()
+    if (now - diagT < 5000L) return
+    android.util.Log.i("QuietWater", "bubbles busy $diagN frames/5s: " + bubbles.joinToString { "${it.pkg}:${it.mode} p=${"%.3f".format(it.pulse)} sq=${"%.3f".format(it.squash)} vs=${"%.3f".format(it.vspin)} s=${"%.3f".format(it.spin)} vy=${"%.1f".format(it.vy)}" })
+    diagN = 0; diagT = now
+}
+
+/** An angle folded into -pi..pi. */
+private fun wrapPi(a: Float): Float = ((a + PI_F) % (2f * PI_F) + 2f * PI_F) % (2f * PI_F) - PI_F
+
+/** Icons a little desaturated, so they sit calmly in the dark gallery. */
+private val QuietIcon = androidx.compose.ui.graphics.ColorFilter.colorMatrix(androidx.compose.ui.graphics.ColorMatrix().apply { setToSaturation(0.78f) })
+
+@Composable
+private fun BubbleCount(host: WaterHost, dock: DockState, b: Bubble, r: Float, count: Int) {
+    var w by remember { mutableIntStateOf(0) }
+    BasicText(
+        if (count > 9) "9+" else "$count",
+        style = QType.secondary(12.sp).copy(color = Q.colors.ink.copy(alpha = 0.88f), shadow = WaterTextShadow),
+        maxLines = 1,
+        modifier = Modifier
+            .wrapContentSize(align = Alignment.TopStart, unbounded = true)
+            .onSizeChanged { w = it.width }
+            .graphicsLayer {
+                host.tick
+                val id = b.id
+                val x = if (id >= 0) host.glassCx(id) else b.x
+                val y = if (id >= 0) host.glassCy(id) + host.glassHalfH(id) else b.y + r
+                translationX = x - dock.origin.x - w / 2f
+                translationY = y - dock.origin.y + 2f * host.dp
+                alpha = if (id < 0) 1f else host.glassAlphaNow(id)
+            },
+    )
 }

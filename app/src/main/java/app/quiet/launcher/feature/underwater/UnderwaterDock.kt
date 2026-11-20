@@ -62,10 +62,12 @@ internal fun Modifier.liquidPress(
     onLift: (Offset) -> Boolean,
     onMove: (Offset) -> Unit,
     onEnd: (cancelled: Boolean) -> Unit,
+    onDown: (Offset) -> Unit = {},
 ): Modifier = pointerInput(key) {
     awaitEachGesture {
         val down = awaitFirstDown()
         down.consume()
+        onDown(coords()?.takeIf { it.isAttached }?.let { host.toWorld(it, down.position) } ?: down.position)
         onPress(true)
         val slop = viewConfiguration.touchSlop
         val r = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
@@ -159,6 +161,57 @@ internal class DockState(val host: WaterHost, val scope: CoroutineScope, val fol
     var open by mutableStateOf<FolderOpen?>(null)
         private set
 
+    // ---------------------------------------------------------------- press: the name surfaces
+
+    /** The favourite whose name has risen out of the water under a finger (drawn crisp on the top layer). */
+    var pressedKey by mutableStateOf<String?>(null)
+        private set
+    /** 0 under water .. 1 risen (a spring; it overshoots a touch). */
+    val surfacing = Animatable(0f)
+    /** When the current press came down (uptime ms): the launch holds until the effect has been seen. */
+    var pressAt = 0L
+        private set
+
+    /**
+     * A finger lands on a name: one clean ring spreads through the water from the touch (the grid
+     * ripple: it bends the frame's submerged part, the label and the names as it passes) and the
+     * name rises out of the water, sharp and bright, with a thin meniscus at its base.
+     */
+    fun pressDown(key: String, at: Offset) {
+        if (drag != null || open != null) return
+        pressAt = android.os.SystemClock.uptimeMillis()
+        // On touch-down: a crisp ring through air and water (it bends the frame and the label within
+        // ~150 ms) and a ripple in the grid, and the name springs up (~80% in ~70 ms).
+        host.ring(at.x, at.y, 0.85f, fade = 1.15f)
+        host.ripple(at.x, at.y, 0.9f)
+        pressedKey = key
+        scope.launch { surfacing.animateTo(1f, spring(0.6f, 1700f)) }
+    }
+
+    /** The finger lifts or slides off: the name sinks back (a small splash if it was a tap). */
+    fun pressUp(key: String, tapped: Boolean) {
+        if (pressedKey != key) return
+        scope.launch {
+            if (tapped) {
+                // A quick tap still shows the name standing out of the water a moment (the launch is
+                // held for it), then it drops back with a small splash.
+                surfacing.animateTo(1f, spring(0.6f, 1700f))
+                delay(110)
+                val lc = labels[key]?.takeIf { it.isAttached }
+                if (lc != null) { val b = host.toWorld(lc, Offset(lc.size.width / 2f, lc.size.height * 0.8f)); host.ripple(b.x, b.y, 0.6f) }
+            }
+            surfacing.animateTo(0f, if (tapped) spring(0.75f, 900f) else spring(1f, 300f))
+            if (pressedKey == key) pressedKey = null
+        }
+    }
+
+    /** A hold became a lift (the drop takes the name): no surfacing name. */
+    private fun clearPress() {
+        if (pressedKey == null) return
+        pressedKey = null
+        scope.launch { surfacing.snapTo(0f) }
+    }
+
     private val dp get() = host.dp
 
     private fun pill(lc: LayoutCoordinates): Pair<Offset, Offset> {
@@ -167,17 +220,18 @@ internal class DockState(val host: WaterHost, val scope: CoroutineScope, val fol
     }
 
     private fun dropStyle(group: Int, lens: Float, frost: Float = 0f) =
-        GlassStyle(corner = 999.dp, bevel = 13.dp, group = group, lens = lens, frost = frost, stir = true, stiffness = 380f, damping = 0.6f)
+        GlassStyle(corner = 999.dp, bevel = 13.dp, group = group, lens = lens, frost = frost, stir = true, stiffness = 380f, damping = 0.6f, clear = true)
 
     // ---------------------------------------------------------------- drag
 
     fun lift(app: AppEntry, key: String, fromFolder: Long?, lc: LayoutCoordinates?, finger: Offset): Boolean {
         if (drag != null || lc == null || !lc.isAttached) return false
+        clearPress()
         if (fromFolder == null && open != null) return false
         val (c, half) = pill(lc)
         // In a folder the drop starts inside the card (same group): pulling it out stretches a neck that breaks.
         // A little frost: what the lifted drop passes over blurs under it, so its label reads alone.
-        val id = host.obtainGlass(dropStyle(if (fromFolder != null) 2 else 1, 0.35f, frost = 0.75f))
+        val id = host.obtainGlass(dropStyle(if (fromFolder != null) 2 else 1, 0.15f))
         val lift = 7f * dp
         val d = DockDrag(app, key, fromFolder, id, half.x, half.y, c, finger, lift)
         // It swells out of the row: small first, then springs to full size a little above the label.
@@ -321,7 +375,7 @@ internal class DockState(val host: WaterHost, val scope: CoroutineScope, val fol
         val lc = labels[item.key]?.takeIf { it.isAttached } ?: return
         val (c, half) = pill(lc)
         // Fully frosted: the card's words are drawn on the top layer, over a blur of the dock below.
-        val id = host.obtainGlass(GlassStyle(corner = 28.dp, bevel = 16.dp, group = 2, frost = 1f, stiffness = 230f, damping = 0.6f))
+        val id = host.obtainGlass(GlassStyle(corner = 28.dp, bevel = 16.dp, group = 2, frost = 1f, stiffness = 230f, damping = 0.6f, clear = true))
         val f = FolderOpen(item.folder.id, item.key, id, c, half)
         val n = item.apps.size.coerceAtMost(MAX_ROWS)
         val h = (62f + n * 52f + 18f) * dp
@@ -386,8 +440,6 @@ internal fun DockRow(state: DockState, view: View, item: DockItem, rowH: Dp) {
     val host = state.host
     val c = Q.colors
     val ref = remember { arrayOfNulls<LayoutCoordinates>(1) }
-    var pressed by remember { mutableStateOf(false) }
-    val press by animateFloatAsState(if (pressed) 1f else 0f, if (pressed) spring(1f, 1400f) else spring(0.7f, 500f), label = "press")
     // Lifted and carried away: the row closes up behind the drop on a spring (and opens again when it comes back).
     val d = state.drag
     val away = d != null && d.key == item.key && d.moved && !d.released
@@ -405,13 +457,18 @@ internal fun DockRow(state: DockState, view: View, item: DockItem, rowH: Dp) {
             .onGloballyPositioned { ref[0] = it; state.rows[item.key] = it }
             .liquidPress(
                 item, host, { ref[0] },
-                onPress = { pressed = it },
+                onDown = { state.pressDown(item.key, it) },
+                onPress = { if (!it) state.pressUp(item.key, tapped = false) },
                 onTap = {
+                    state.pressUp(item.key, tapped = true)
                     when (item) {
                         is DockItem.App -> {
                             val k = state.labels[item.key]
                             val from = if (k != null && k.isAttached) host.toWorld(k, Offset(k.size.width / 2f, k.size.height / 2f)) else Offset(host.w / 2f, host.restLine)
-                            launchWithDrop(host, view, item.app, from)
+                            // Held ~180 ms after release (and 260 ms after down at least): the splash and
+                            // the start of the drop are seen; the haptic still fires at once.
+                            val sinceDown = android.os.SystemClock.uptimeMillis() - state.pressAt
+                            launchWithDrop(host, view, item.app, from, holdMs = maxOf(180L, 260L - sinceDown))
                         }
                         is DockItem.Folder -> state.openFolder(item)
                     }
@@ -426,20 +483,20 @@ internal fun DockRow(state: DockState, view: View, item: DockItem, rowH: Dp) {
                 onEnd = state::end,
             )
             .graphicsLayer {
-                val p = press
-                scaleX = 1f - 0.015f * p; scaleY = scaleX
                 val dd = state.drag
                 // The lifted label rides the drop on the top layer: no ghost stays behind in the row.
                 val lifted = dd != null && dd.key == item.key && !dd.settled
-                alpha = (1f - 0.4f * p) * (if (lifted) 0f else 1f) * open * (1f - 0.72f * state.dim.value)
+                // Surfaced: the crisp copy on the top layer stands in for it.
+                val up = if (state.pressedKey == item.key) (state.surfacing.value * 4f).coerceIn(0f, 1f) else 0f
+                alpha = (if (lifted) 0f else 1f) * (1f - up) * open * (1f - 0.72f * state.dim.value)
             },
         contentAlignment = Alignment.CenterStart,
     ) {
         Row(Modifier.onGloballyPositioned { state.labels[item.key] = it }, verticalAlignment = Alignment.CenterVertically) {
             when (item) {
-                is DockItem.App -> BasicText(item.app.label, style = QType.favourite(24.sp).copy(color = c.ink), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                is DockItem.App -> BasicText(item.app.label, style = QType.favourite(24.sp).copy(color = c.ink, shadow = NameShadow), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 is DockItem.Folder -> {
-                    BasicText(item.folder.name, style = QType.favourite(24.sp).copy(color = c.ink), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                    BasicText(item.folder.name, style = QType.favourite(24.sp).copy(color = c.ink, shadow = NameShadow), maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
                     Spacer(Modifier.width(12.dp))
                     FolderBeads(item.apps.size)
                 }
@@ -447,6 +504,9 @@ internal fun DockRow(state: DockState, view: View, item: DockItem, rowH: Dp) {
         }
     }
 }
+
+/** Names written straight on the water: a soft dark halo, never a hard drop shadow or a box. */
+private val NameShadow = Shadow(Color.Black.copy(alpha = 0.6f), Offset(0f, 1.5f), 14f)
 
 /** A tiny cluster of drops after a folder's name: one per app (up to four). */
 @Composable
@@ -502,6 +562,59 @@ internal fun DockOverlay(state: DockState, view: View, modifier: Modifier) {
         }
     }
     if (d != null) OnWaterTop("dock-drag", z = 3) { DragLabel(state, d) }
+    val pk = state.pressedKey
+    if (pk != null) OnWaterTop("dock-press", z = 3) { SurfacedName(state, pk) }
+}
+
+/**
+ * A pressed name out of the water: drawn above the world (so no refraction, no tint), risen a few
+ * dp on a spring, a touch brighter, with a thin meniscus line where it leaves the surface.
+ */
+@Composable
+private fun SurfacedName(state: DockState, key: String) {
+    val host = state.host
+    val item = state.items.firstOrNull { it.key == key } ?: return
+    val text = when (item) { is DockItem.App -> item.app.label; is DockItem.Folder -> item.folder.name }
+    var size by remember { mutableStateOf(IntSize.Zero) }
+    val dp = host.dp
+    fun at(): Offset? = state.labels[key]?.takeIf { it.isAttached }?.let { host.toWorld(it) }
+    fun shown(): Float = (state.surfacing.value * 4f).coerceIn(0f, 1f)
+    // The meniscus: a thin bright line at the name's base with a faint glow under it, fading at the ends.
+    Canvas(Modifier.fillMaxSize()) {
+        val p = at() ?: return@Canvas
+        val k = state.surfacing.value.coerceIn(0f, 1.2f)
+        val a = shown() * k.coerceAtMost(1f)
+        if (a <= 0.01f || size.width == 0) return@Canvas
+        val y = p.y + size.height * 0.84f
+        val x0 = p.x - 10f * dp; val x1 = p.x + size.width + 10f * dp
+        val line = androidx.compose.ui.graphics.Brush.horizontalGradient(
+            0f to Color.Transparent, 0.15f to Color.White.copy(alpha = 0.75f * a), 0.85f to Color.White.copy(alpha = 0.75f * a), 1f to Color.Transparent,
+            startX = x0, endX = x1,
+        )
+        drawLine(line, Offset(x0, y), Offset(x1, y), strokeWidth = 1.5f * dp)
+        val glow = androidx.compose.ui.graphics.Brush.horizontalGradient(
+            0f to Color.Transparent, 0.25f to Color.White.copy(alpha = 0.12f * a), 0.75f to Color.White.copy(alpha = 0.12f * a), 1f to Color.Transparent,
+            startX = x0, endX = x1,
+        )
+        drawLine(glow, Offset(x0, y + 2.5f * dp), Offset(x1, y + 2.5f * dp), strokeWidth = 4f * dp)
+    }
+    BasicText(
+        text,
+        style = QType.favourite(24.sp).copy(color = Color.White, shadow = Shadow(Color.Black.copy(alpha = 0.55f), Offset(0f, 2f * dp), 12f * dp)),
+        maxLines = 1,
+        modifier = Modifier
+            .wrapContentSize(align = Alignment.TopStart, unbounded = true)
+            .onSizeChanged { size = it }
+            .graphicsLayer {
+                val p = at() ?: Offset(-9999f, -9999f)
+                val k = state.surfacing.value
+                translationX = p.x; translationY = p.y - 8f * dp * k
+                val s = 1f + 0.02f * k
+                scaleX = s; scaleY = s
+                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 1f)
+                alpha = shown() * (1f - 0.72f * state.dim.value)
+            },
+    )
 }
 
 @Composable
@@ -509,12 +622,7 @@ private fun DragLabel(state: DockState, d: DockDrag) {
     val host = state.host
     var size by remember { mutableStateOf(IntSize.Zero) }
     val dp = host.dp
-    // A smoky lens under the words, hugging the drop: whatever the drop passes over stays behind it.
-    Canvas(Modifier.fillMaxSize()) {
-        host.tick
-        val a = labelAlpha(host, d)
-        drawGlassShape(host, d.id, Color.Black.copy(alpha = 0.6f * a), grow = -1.5f * dp)
-    }
+    // No chip under the words: the clear drop and the label's soft shadow are all there is.
     BasicText(
         d.app.label,
         style = QType.favourite(24.sp).copy(

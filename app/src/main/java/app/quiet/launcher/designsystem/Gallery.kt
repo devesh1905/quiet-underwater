@@ -85,13 +85,17 @@ fun MuseumLabel(
     titleStyle: TextStyle = QType.labelTitle(24.sp),
     ink: Color = Q.colors.ink,
     muted: Color = Q.colors.muted,
+    line2Style: TextStyle = QType.body(16.sp),
+    line3Style: TextStyle = QType.secondary(14.sp),
+    gap: Dp = 6.dp,
+    titleLines: Int = 2,
 ) {
     Column(modifier) {
-        BasicText(title, style = titleStyle.copy(color = ink), maxLines = 2, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(6.dp))
-        BasicText(line2, style = QType.body(16.sp).copy(color = ink), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        BasicText(title, style = titleStyle.copy(color = ink), maxLines = titleLines, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(gap))
+        BasicText(line2, style = line2Style.copy(color = ink), maxLines = 1, overflow = TextOverflow.Ellipsis)
         if (!line3.isNullOrBlank()) {
-            BasicText(line3, style = QType.secondary(14.sp).copy(color = muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            BasicText(line3, style = line3Style.copy(color = muted), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
 }

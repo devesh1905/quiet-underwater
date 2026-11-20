@@ -1,5 +1,6 @@
 package app.quiet.launcher.service
 
+import app.quiet.launcher.feature.underwater.UnlockWatch
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -54,6 +55,8 @@ class ShellCommandReceiver : BroadcastReceiver() {
                         if (intent.hasExtra("shader")) d.shaderMode = intent.getIntExtra("shader", 0)
                         if (intent.hasExtra("still")) d.forceStill = intent.getBooleanExtra("still", false)
                         if (intent.hasExtra("logfeel")) d.logFeel = intent.getBooleanExtra("logfeel", false)
+                        // Underwater Home: behave as if the phone was just unlocked (the first-look ripple).
+                        if (intent.getBooleanExtra("unlock", false)) UnlockWatch.fake()
                         Log.i("QuietWater", "debug shader=${d.shaderMode} still=${d.forceStill} logfeel=${d.logFeel}")
                     }
                     // Lock screen test knobs (session only, nothing saved): see feature/lock/LockDebug.kt.

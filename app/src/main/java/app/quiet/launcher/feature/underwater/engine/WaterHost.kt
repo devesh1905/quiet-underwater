@@ -48,6 +48,11 @@ data class GlassStyle(
     val rigid: Boolean = false,
     /** Condense from nothing on the first target (default); false: appear at full alpha at once. */
     val growIn: Boolean = true,
+    /**
+     * Clear glass: only the bending at its edge shows (no rim line, fresnel, specular, tint, contact
+     * shadow or caustic line). The touch lens on Home, drag drops, quiet cards.
+     */
+    val clear: Boolean = false,
 )
 
 /**
@@ -140,9 +145,11 @@ class WaterHost internal constructor() {
     private var oneFrame = true
     /** Last [wake] (ms): something else on screen changed, so the frame stays at the display rate a moment. */
     private var lastWake = 0L
-    /** Why the last frame ran (trace counter "water.reason"): 1 wake, 2 finger, 3 burst, 4 drops/rings, 5 energy, 6 shimmer. */
+    /** Why the last frame ran (trace counter "water.reason"): 1 wake, 2 finger, 3 burst, 4 drops/rings, 5 energy, 6 shimmer, 7 ambient. */
     internal var reason = 0
     internal var time = 0f
+    private val reasonCount = IntArray(8)
+    private var reasonT = 0L
 
     // ================================================================ public API
 
@@ -164,9 +171,9 @@ class WaterHost internal constructor() {
     }
 
     /** An analytic ring that bends whatever it crosses, air or water (search opening, a bead landing). [amp] ~1. */
-    fun ring(x: Float, y: Float, amp: Float = 1f) {
+    fun ring(x: Float, y: Float, amp: Float = 1f, fade: Float = 0.9f) {
         if (still) return
-        sim.ring(x, y, amp.coerceIn(0f, 1.5f))
+        sim.ring(x, y, amp.coerceIn(0f, 1.5f), fade.coerceIn(0.2f, 4f))
         stir(fullMs = 1200L)
     }
 
@@ -211,6 +218,34 @@ class WaterHost internal constructor() {
         if (WaterDebug.logFeel) android.util.Log.i("QuietWater", "feel Clink x$intensity")
         haptics?.clink(intensity)
     }
+
+    /**
+     * Home is in front. Then for a few seconds after it appears, after an unlock ([liven]) and after
+     * the last touch, the water lives at a low rate (~25 fps, the panel may drop its refresh rate):
+     * a slow swell along the waterline and faint caustics drifting under it. Then it eases to a
+     * fully still surface and the loop stops (the still frame still shows the water: the line, the
+     * refraction under it). Off: nothing.
+     */
+    var ambient: Boolean = false
+        set(v) { if (field != v) { field = v; if (v) liven() else wakeQuiet() } }
+
+    /** Until when (uptime ms) the ambient life runs. */
+    private var ambUntil = 0L
+
+    /** Let the water live for a few seconds (Home appeared, an unlock, a touch). */
+    fun liven() {
+        if (!ambient) return
+        ambUntil = SystemClock.uptimeMillis() + AMBIENT_MS
+        wakeQuiet()
+    }
+
+    /**
+     * A fixed resting waterline (px, world) chosen by a screen's layout (Home floods its painting's
+     * frame to a set height); NaN = follow the level. It is kept when that screen goes away, so
+     * changing pages never sloshes the tank.
+     */
+    var homeLine: Float = Float.NaN
+        set(v) { if (field.isNaN() != v.isNaN() || abs(field - v) > 0.5f) { field = v; wakeQuiet() } }
 
     /** Ask for frames (call after changing anything the water should show). */
     fun wake() {
@@ -262,13 +297,13 @@ class WaterHost internal constructor() {
         // change asks for frames, so a recomposing screen does not keep the water awake.
         if (g.corner[id] == corner && g.bevel[id] == bevel && g.group[id] == group && g.lens[id] == s.lens &&
             g.frost[id] == s.frost && g.floats[id] == s.floats && g.stir[id] == s.stir && g.k[id] == s.stiffness &&
-            g.zeta[id] == s.damping && g.rigid[id] == s.rigid && g.growIn[id] == s.growIn && anchorOutset[id] == outset
+            g.zeta[id] == s.damping && g.rigid[id] == s.rigid && g.growIn[id] == s.growIn && g.clear[id] == s.clear && anchorOutset[id] == outset
         ) return
         g.corner[id] = corner; g.bevel[id] = bevel
         g.group[id] = group; g.lens[id] = s.lens; g.frost[id] = s.frost
         g.floats[id] = s.floats; g.stir[id] = s.stir
         g.k[id] = s.stiffness; g.zeta[id] = s.damping
-        g.rigid[id] = s.rigid; g.growIn[id] = s.growIn
+        g.rigid[id] = s.rigid; g.growIn[id] = s.growIn; g.clear[id] = s.clear
         anchorOutset[id] = outset
         wake()
     }
@@ -351,16 +386,25 @@ class WaterHost internal constructor() {
         rawGx = -x; rawGy = y
         val plane = sqrt(rawGx * rawGx + rawGy * rawGy)
         val ts = if (plane > 2.5f && rawGy > 0.8f) (rawGx / rawGy).coerceIn(-0.7f, 0.7f) else 0f
-        if (abs(ts - lastWakeTilt) > 0.03f) { lastWakeTilt = ts; stir(); wakeQuiet() }
-        else if (abs(y - lastWakeGy) > 0.35f) { lastWakeGy = y; stir(); wakeQuiet() }
+        // Only a real change of how the phone is held wakes the water (a dead-band well above sensor
+        // noise and hand tremor), and it plays out on its own energy (the slosh, the painting's lean)
+        // with no idle shimmer after it. While the loop runs, the tilt is simply read each step.
+        if (running && !awake && !still) {
+            if (abs(ts - lastWakeTilt) > 0.07f) { lastWakeTilt = ts; lastWakeGy = y; wakeQuiet() }
+            else if (abs(y - lastWakeGy) > 0.9f) { lastWakeGy = y; lastWakeTilt = ts; wakeQuiet() }
+        } else { lastWakeTilt = ts; lastWakeGy = y }
     }
 
     internal fun fingerDown(x: Float, y: Float) {
         fingers++
+        if (ambient) ambUntil = SystemClock.uptimeMillis() + AMBIENT_MS
         if (!still && isUnder(x, y)) { touch(x, y, 0f, 0f); feel(Feel.Drip) }
         stir(); wake()
     }
-    internal fun fingerUp() { fingers = max(0, fingers - 1); stir() }
+    internal fun fingerUp() {
+        fingers = max(0, fingers - 1); stir()
+        if (ambient) ambUntil = SystemClock.uptimeMillis() + AMBIENT_MS
+    }
     internal fun fingerMove(x: Float, y: Float, dx: Float, dy: Float) {
         val before = isUnder(x - dx, y - dy)
         if (touch(x, y, dx, dy)) {
@@ -389,7 +433,7 @@ class WaterHost internal constructor() {
         w = r.size.width.toFloat(); h = r.size.height.toFloat()
         if (w <= 0f) return
         sim.resize(w, h, dp)
-        sim.targetY = levelToY(level)
+        sim.targetY = if (homeLine.isNaN()) levelToY(level) else homeLine
         val ry = sim.targetY
         if (abs(ry - restLine) > 0.5f) restLine = ry
         val g = sim.glass
@@ -430,6 +474,7 @@ class WaterHost internal constructor() {
     }
 
     internal fun wantsFrames(now: Long): Boolean {
+        sim.ambTarget = if (ambient && !still && now < ambUntil) 1f else 0f
         reason = when {
             w <= 0f || oneFrame -> 1
             fingers > 0 -> 2
@@ -438,6 +483,8 @@ class WaterHost internal constructor() {
             energy() > REST_ENERGY -> 5
             // A short shimmer after the last touch (capped at 30 fps), then the frame holds.
             now - lastStir < SHIMMER_MS -> 6
+            // Home's ambient life (or its fade-out): low rate, see [ambient].
+            sim.ambTarget > 0f || sim.amb > 0f -> 7
             else -> 0
         }
         return reason != 0
@@ -451,6 +498,16 @@ class WaterHost internal constructor() {
     /** One displayed frame: fixed 120 Hz substeps; [dt] already clamped. */
     internal fun frame(dt: Float) {
         oneFrame = false
+        // Test knob (logfeel): frames per reason, logged every 10 s (tag QuietWater).
+        if (WaterDebug.logFeel) {
+            reasonCount[reason.coerceIn(0, 7)]++
+            val now = SystemClock.uptimeMillis()
+            if (reasonT == 0L) reasonT = now
+            if (now - reasonT >= 10_000L) {
+                android.util.Log.i("QuietWater", "frames/10s by reason " + reasonCount.joinToString(",") + " full=" + fullRate(now) + " e=" + energy())
+                reasonCount.fill(0); reasonT = now
+            }
+        }
         val traced = android.os.Build.VERSION.SDK_INT >= 29 && android.os.Trace.isEnabled()
         if (traced) {
             android.os.Trace.beginSection("Water.frame")
@@ -523,6 +580,8 @@ class WaterHost internal constructor() {
         private const val FULL_ENERGY = 10f
         /** The idle shimmer after the last stir (at 30 fps), then the loop holds. */
         private const val SHIMMER_MS = 3000L
+        /** How long the ambient life runs after Home appears, an unlock or the last touch (then it eases still). */
+        private const val AMBIENT_MS = 7000L
         /** After a [wake] (a page scroll, a glass target moving) the water keeps the display rate this long. */
         private const val WAKE_FULL_MS = 160L
     }

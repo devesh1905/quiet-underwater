@@ -58,7 +58,37 @@ internal class WaterSim {
         if (!lineReady) { line[0] = targetY.takeIf { it > 0f } ?: (h * 0.6f); line[1] = 0f; lineReady = true }
     }
 
-    fun waterY(x: Float): Float = line[0] - surf.at(if (w > 0f) x / w else 0.5f)
+    fun waterY(x: Float): Float { val u = if (w > 0f) x / w else 0.5f; return line[0] - surf.at(u) - ambY(u) }
+
+    // ---- the ambient swell: a slow wave travelling along the waterline in sets every few seconds,
+    // analytic (no spring energy, so it never asks for the display rate). [amb] eases toward
+    // [ambTarget] (Home sets it while it is in front); the shader reads the same curve via uSurf.
+    var amb = 0f
+    var ambTarget = 0f
+    private var ambT = 0f
+    private var ambA = 0f
+
+    /** The swell's rise (px, up) at [u] (0..1 across); 0 while the ambient is off. */
+    fun ambY(u: Float): Float {
+        if (ambA <= 0f) return 0f
+        val t = ambT
+        val a = 6.2831855f
+        return ambA * (0.68f * kotlin.math.sin(a * (u * 0.72f - t / 3.6f)) + 0.32f * kotlin.math.sin(a * (u * 1.55f + t / 2.45f) + 1.3f))
+    }
+
+    private fun stepAmbient(dt: Float) {
+        // Eases in over ~1 s; out over ~2 s to a fully still surface (then the loop stops).
+        amb += (ambTarget - amb) * (1f - exp(-dt / (if (ambTarget > amb) 0.9f else 0.55f)))
+        if (ambTarget <= 0f && amb < 0.012f) amb = 0f
+        if (amb <= 0f) { ambA = 0f; return }
+        ambT += dt
+        // Sets: the swell builds and fades every ~6.5 s, never quite flat.
+        val s = 0.5f + 0.5f * kotlin.math.sin(6.2831855f * ambT / 6.5f - 1.4f)
+        ambA = 4.2f * dp * amb * (0.22f + 0.78f * s * s)
+    }
+
+    /** The ring fade rate (amp per second) of each ring. */
+    val ringF = FloatArray(MAX_RINGS)
 
     /** Local surface slope (dy/dx) around [x], over [span] px. */
     fun slope(x: Float, span: Float): Float {
@@ -106,13 +136,13 @@ internal class WaterSim {
         return -1
     }
 
-    fun ring(x: Float, y: Float, amp: Float) {
+    fun ring(x: Float, y: Float, amp: Float, fade: Float = 0.9f) {
         var slot = 0; var weakest = Float.MAX_VALUE
         for (i in 0 until MAX_RINGS) {
             if (ringA[i] <= 0f) { slot = i; weakest = -1f; break }
             if (ringA[i] < weakest) { weakest = ringA[i]; slot = i }
         }
-        ringX[slot] = x; ringY[slot] = y; ringR[slot] = 0f; ringA[slot] = amp; ringKicked[slot] = false
+        ringX[slot] = x; ringY[slot] = y; ringR[slot] = 0f; ringA[slot] = amp; ringF[slot] = fade; ringKicked[slot] = false
     }
 
     // ---------------------------------------------------------------- step
@@ -126,6 +156,7 @@ internal class WaterSim {
         val g = grid ?: return
         time += dt
         springStep(line, targetY, 3.2f, 0.62f, dt)
+        stepAmbient(dt)
         surf.setTilt(tilt, w)
         surf.step(dt)
         // ---- drops: ballistic, splash where they meet the surface.
@@ -151,7 +182,7 @@ internal class WaterSim {
         for (i in 0 until MAX_RINGS) {
             if (ringA[i] <= 0f) continue
             ringR[i] += dt * 900f * dp * (0.55f + 0.45f * exp(-ringR[i] / (220f * dp)))
-            ringA[i] -= dt * 0.9f
+            ringA[i] -= dt * ringF[i]
             val wy = waterY(ringX[i])
             if (!ringKicked[i] && ringR[i] >= abs(wy - ringY[i])) {
                 ringKicked[i] = true
@@ -174,6 +205,7 @@ internal class WaterSim {
     /** Reduced motion / battery saver: the water at rest at its level. */
     fun settle() {
         line[0] = targetY; line[1] = 0f
+        amb = 0f; ambA = 0f
         surf.clearBump(); surf.setTilt(0f, w); surf.flatten()
         grid?.clear(); gridLive = false
         for (i in 0 until MAX_DROPS) { dropR[i] = 0f }

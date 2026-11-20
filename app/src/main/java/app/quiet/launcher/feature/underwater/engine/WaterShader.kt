@@ -34,6 +34,7 @@ uniform float uDp;
 uniform float uRefr;
 uniform float uCaus;
 uniform float uCalm;
+uniform float uAmb;
 uniform float4 uDrop[6];
 uniform float uDrops;
 uniform float4 uRing[4];
@@ -80,9 +81,9 @@ float smin1(float a,float b,float k){ float h=clamp(.5+.5*(b-a)/k,0.,1.); return
 // wherever the result is used (< 30 dp), since the smooth-min of anything that far is the near
 // body's distance. One box distance per body: most pixels near glass are deep inside a slab or
 // well outside it, where the gradient is not needed.
-float glassDist(float2 p, out float4 bA, out float4 bB, out float4 bC){
+float glassDist(float2 p, out float4 bA, out float4 bB, out float4 bC, out float4 bD){
   float d0=1e4; float d1=1e4; float d2=1e4; float d3=1e4; float best=1e4;
-  bA=float4(0.); bB=float4(0.); bC=float4(0.);
+  bA=float4(0.); bB=float4(0.); bC=float4(0.); bD=float4(0.);
   float T=64.*uDp;
   for(int i=0;i<16;i++){
     if(float(i)>=uGN) break;
@@ -96,7 +97,7 @@ float glassDist(float2 p, out float4 bA, out float4 bB, out float4 bC){
         float2 b=max(A.zw*float2(1.+C.z,1./(1.+C.z)),float2(.5));
         float mb=min(b.x,b.y); float r=min(B.x,mb);
         float d=sdRR(q,b,r)+(1.-B.z)*mb*1.05;
-        if(d<best){ best=d; bA=A; bB=B; bC=C; }
+        if(d<best){ best=d; bA=A; bB=B; bC=C; bD=D; }
         float g=B.y;
         if(g<.5) d0=min(d0,d); else if(g<1.5) d1=smin1(d1,d,uMergeK); else if(g<2.5) d2=smin1(d2,d,uMergeK); else d3=smin1(d3,d,uMergeK);
       }
@@ -127,6 +128,15 @@ float3 glassField(float2 p){
   }
   return min(min(d0,d1),min(d2,d3));
 }
+// Home's ambient caustics: a drifting network of soft light ridges (p in dp).
+float ambCaus(float2 p,float t){
+  float2 q=p*.021;
+  float a=sin(q.x*1.7+t*.42+sin(q.y*1.3-t*.31)*1.6);
+  float b=sin(q.y*1.9-t*.37+sin(q.x*1.1+t*.27)*1.7);
+  float c=sin((q.x-q.y)*1.2+t*.33+a*.9);
+  float v=(a+b+c)*.34;
+  return exp(-v*v*22.);
+}
 // Depth absorption tinted by the painting; bright pixels (type) keep most of their colour.
 float3 absorb(float3 w,float d,float amt){
   float dz=max(d,0.)/uRes.y;
@@ -136,7 +146,8 @@ float3 absorb(float3 w,float d,float amt){
   float keep=smoothstep(.45,.85,lum(w))*.6;
   return mix(w,mix(t,w,keep),amt);
 }
-half4 main(float2 xy){
+half4 main(float2 xyIn){
+  float2 xy=xyIn;
   // Above the highest point of the surface (uTopY, from the CPU, with a margin), outside every glass
   // body's reach, with no ring or drop in flight, the pass below returns exactly this pixel: return
   // it at once (the clock and the sky above the water skip all of it).
@@ -157,27 +168,46 @@ half4 main(float2 xy){
   }
   // ---- the glass under this pixel?
   if(uDbg==1.) return src(xy);
-  float4 gA=float4(0.); float4 gB=float4(0.); float4 gC=float4(0.);
+  float4 gA=float4(0.); float4 gB=float4(0.); float4 gC=float4(0.); float4 gD=float4(0.);
   float gd=1e4;
   float2 gn=float2(0.,-1.);
   // Only inside the bounding box of every body's reach (uGBox, from the CPU) is the glass looked at.
   if(uDbg!=2. && xy.x>uGBox.x && xy.y>uGBox.y && xy.x<uGBox.z && xy.y<uGBox.w){
-    gd=glassDist(xy,gA,gB,gC);
+    gd=glassDist(xy,gA,gB,gC,gD);
     // The normal only matters on the dome (within the bevel) and in the 30 dp halo outside it;
     // deeper inside the dome is flat, whatever the gradient.
     if(gd<30.*dp && gd>-max(gC.w,1.)-2.){ float3 gf=glassField(xy); float2 gg=gf.yz-gf.x; gn=gg/(length(gg)+1e-5); }
   }
   // ---- the water
+  // Clear glass (uGD.w): only the bending at its edge shows.
+  bool clr=gD.w>.5;
+  // Clear glass with no frost is a pure lens (Home's touch lens, drag drops, the music raft): it only
+  // bends where the content under it is looked up (lo). The water itself (its ripples, tint,
+  // caustics and light) is shaded at this very pixel, exactly as around it, so the lens is never
+  // darker than the water it sits in (it would otherwise magnify the trough of the finger's own
+  // splash) and has no colour fringe: only the magnified, bent content shows, a hair brighter.
+  bool lensOnly=clr && gC.x<.01 && gd<1.5;
+  float2 lo=float2(0.);
+  float lensK=0.;
+  if(lensOnly){
+    float bev=max(gC.w,1.);
+    float s=clamp(-gd/bev,0.,1.);
+    float hgt=sqrt(1.-(1.-s)*(1.-s));
+    float3 n=normalize(float3(gn*(1.-hgt),hgt+.04));
+    float inside=(1.-smoothstep(-.75,.75,gd))*clamp(gB.z*1.4,0.,1.);
+    float2 loff=-n.xy*(7.+gB.w*18.)*dp*(.35+.65*hgt)*1.45-(xy-gA.xy)*gB.w*.42*hgt;
+    lo=loff*inside; lensK=inside;
+  }
   float sy=surfY(xy.x);
   float d=xy.y-sy;
   if(uDbg==3.) d=-1e4;
   float3 H=normalize(float3(-.35,-.75,.55)+float3(0.,0.,1.));
   // Deep inside glass at full alpha the glass replaces the pixel outright (mix weight 1 below), so
   // the water under it is not worth shading: big slabs (the dock) skip 4-5 taps per pixel.
-  bool covered=gd< -.8 && gB.z*1.4>=1.;
+  bool covered=!lensOnly && gd< -.8 && gB.z*1.4>=1.;
   // Fully under the water this is replaced below, so it is only sampled near and above the line.
   float3 col=float3(0.);
-  if(d<1. && !covered) col=src(xy+ro).rgb;
+  if(d<1. && !covered) col=src(xy+ro+lo).rgb;
   if(d>-3. && !covered){
     float near=exp(-max(d,0.)/(uRes.y*.32));
     float cell=uRes.x/uGrid.x;
@@ -188,13 +218,21 @@ half4 main(float2 xy){
     if(d<80.*dp) off.y-=9.*dp*exp(-max(d,0.)/(9.*dp));
     // Floating glass bends the water around its rim (the meniscus climbing the glass).
     if(gd>0. && gd<30.*dp) off+=gn*exp(-gd/(7.*dp))*6.*dp*gB.z;
-    float3 w=src3(xy,off);
+    float3 w=src3(xy+lo,off);
     // What is above the surface, mirrored and shimmering just under it (the clock reads through).
     float my=sy-max(d,0.)-3.*dp+off.y*1.5;
-    if(my>1. && d<140.*dp){ float rf=exp(-max(d,0.)/(30.*dp))*.2; w=mix(w,src(float2(xy.x+off.x*1.4,my)).rgb,rf); }
+    if(my>1. && d<140.*dp){
+      float3 rc=src(float2(xy.x+off.x*1.4+lo.x,my-lo.y)).rgb;
+      // Type (near-white, unsaturated) is not mirrored: only the painting and the wall are.
+      float mx=max(rc.r,max(rc.g,rc.b)); float mn=min(rc.r,min(rc.g,rc.b));
+      float type=smoothstep(.62,.8,mn)*(1.-smoothstep(.1,.25,mx-mn));
+      float rf=exp(-max(d,0.)/(30.*dp))*.2*(1.-type);
+      w=mix(w,rc,rf);
+    }
     w=absorb(w,d,1.);
     float c=max(-g.z*uCaus,0.); c=c*c/(1.+c*.6);
     w+=mix(uSheen,uLt,.4)*c*(.42*near+.04);
+    if(uAmb>0. && d>2.*dp){ w+=mix(uSheen,uLt,.5)*ambCaus(xy/dp,uTime)*uAmb*.085*smoothstep(2.*dp,34.*dp,d)*exp(-d/(380.*dp)); }
     float3 n=normalize(float3(-g.xy*2.4,1.));
     w+=uSheen*pow(max(dot(n,H),0.),300.)*1.3*(.25+.75*near);
     if(d<130.*dp) w+=uLt*.07*exp(-max(d,0.)/(22.*dp));
@@ -207,7 +245,7 @@ half4 main(float2 xy){
   }
   col+=uSheen*rl*.07;
   // ---- contact shadow and caustic on the water under the glass
-  if(gd>0. && gd<30.*dp){
+  if(gd>0. && gd<30.*dp && !clr){
     float below=clamp(gn.y*.7+.45,0.,1.);
     float under=smoothstep(-2.,2.,d);
     col*=1.-exp(-gd/(9.*dp))*(.14+.12*under)*below*gB.z;
@@ -215,16 +253,18 @@ half4 main(float2 xy){
     col+=uSheen*exp(-ce*ce*.5)*.2*below*under*gB.z;
   }
   // ---- glass
-  if(gd<1.5){
+  if(gd<1.5 && !lensOnly){
     float bev=max(gC.w,1.);
     float s=clamp(-gd/bev,0.,1.);
     float hgt=sqrt(1.-(1.-s)*(1.-s));
     float3 n=normalize(float3(gn*(1.-hgt),hgt+.04));
     float lens=gB.w;
-    float2 off=-n.xy*(7.+lens*18.)*dp*(.35+.65*hgt)-(xy-gA.xy)*lens*.42*hgt+ro*.3;
+    float edgeK=clr ? 1.45 : 1.;
+    float2 off=-n.xy*(7.+lens*18.)*dp*(.35+.65*hgt)*edgeK-(xy-gA.xy)*lens*.42*hgt+ro*.3;
     float fr=gC.x;
     // Fully frosted, the blur replaces it: one tap instead of three dispersed ones.
-    float3 bc=fr*1.2<1. ? float3(src(xy+off).r, src(xy+off*1.08).g, src(xy+off*1.17).b) : src(xy+off).rgb;
+    float disp=1.;
+    float3 bc=fr*1.2<1. ? float3(src(xy+off).r, src(xy+off*(1.+.08*disp)).g, src(xy+off*(1.+.17*disp)).b) : src(xy+off).rgb;
     if(fr>0.){
       float3 acc=bc; float rr=16.*dp*fr; float a0=hash21(xy)*6.283;
       for(int k=0;k<6;k++){ float an=a0+float(k)*1.047; float rk=rr*(.55+.45*fract(float(k)*.618+hash21(xy+3.))); acc+=src(xy+off+float2(cos(an),sin(an))*rk).rgb; }
@@ -236,13 +276,16 @@ half4 main(float2 xy){
     float2 q=xy+off;
     float dq=q.y-surfY(q.x);
     if(dq>0.) bc=absorb(bc,dq,.65);
-    float3 gc=bc*.97+uLt*.022;
-    gc+=pow(1.-n.z,3.)*mix(float3(1.),uLt,.4)*.55;
-    float3 Hg=normalize(float3(-.45,-.6,.65)+float3(0.,0.,1.));
-    gc+=pow(max(dot(n,Hg),0.),90.)*1.3;
-    gc+=pow(max(dot(n,normalize(float3(.5,.55,.7)+float3(0.,0.,1.))),0.),30.)*.16;
-    float rim=1.-smoothstep(0.,1.1*dp,abs(gd+1.2*dp));
-    gc+=rim*(.16+.18*clamp(-gn.y,0.,1.))*mix(uLt,float3(1.),.5);
+    float3 gc=bc;
+    if(!clr){
+      gc=bc*.97+uLt*.022;
+      gc+=pow(1.-n.z,3.)*mix(float3(1.),uLt,.4)*.55;
+      float3 Hg=normalize(float3(-.45,-.6,.65)+float3(0.,0.,1.));
+      gc+=pow(max(dot(n,Hg),0.),90.)*1.3;
+      gc+=pow(max(dot(n,normalize(float3(.5,.55,.7)+float3(0.,0.,1.))),0.),30.)*.16;
+      float rim=1.-smoothstep(0.,1.1*dp,abs(gd+1.2*dp));
+      gc+=rim*(.16+.18*clamp(-gn.y,0.,1.))*mix(uLt,float3(1.),.5);
+    }
     float inside=1.-smoothstep(-.75,.75,gd);
     col=mix(col,gc,inside*clamp(gB.z*1.4,0.,1.));
   }
@@ -265,6 +308,7 @@ half4 main(float2 xy){
       }
     }
   }
+  col*=1.+.035*lensK;
   return half4(half3(col),1.);
 }
 """
