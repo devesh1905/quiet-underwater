@@ -1,9 +1,16 @@
 <h1 align="center">Quiet Underwater</h1>
 
 <p align="center">
-  A calm Android launcher where the home screen is water and everything you touch is glass.<br>
-  The water level is your battery. The painting of the day lies beneath it.
+  A calm Android launcher where the home screen is water and the day's painting hangs above it.<br>
+  Touch the water and it moves; leave it and it goes still.
 </p>
+
+<p align="center">
+  <img src="docs/underwater/home.png" width="250" alt="Home: a large serif clock and date, a public-domain painting in a walnut frame on a dark wall with the water flooding its lower part, a museum label under it, and favourite apps as plain text under the water">
+  <img src="docs/underwater/lock-water.jpg" width="250" alt="Water lock screen: the painting fills the screen, the water stands at the battery level with the clock above it and a glass drop on the fingerprint spot">
+  <img src="docs/underwater/charging-flood.jpg" width="250" alt="Flood charging animation: a jet of water rises from the USB port and splashes into the surface">
+</p>
+<p align="center"><sub>Real screenshots from a Poco F6 (HyperOS 3): Home, the Water lock screen, and the Flood as a charger is plugged in.</sub></p>
 
 > Quiet Underwater is an edition of **[Quiet](https://github.com/devesh1905/quiet-launcher)**, a text-only launcher
 > that helps you use your phone less. It's the same app with the same features, rebuilt around real water and glass
@@ -11,29 +18,33 @@
 
 ## The idea
 
-**Water is the world; glass is what you touch.**
+**Water is the world; the painting is the art; glass appears only where you touch.**
 
-- **Water** fills the background and shows state: its level is your battery, it ripples under your finger, it
-  sloshes when you tilt the phone, and the day's painting bends beneath it.
-- **Glass** is used for everything you interact with: the dock, buttons, search, sheets, notifications and the
-  keyboard. Every piece refracts the water and the painting behind it.
+- **Water** floods the screen. It ripples under your finger, moves when you tilt the phone and bends whatever
+  lies beneath it. On the lock screen its level is your battery.
+- **The painting** hangs in a real frame with a museum label, so it reads as art, not a wallpaper.
+- **Glass** is kept for things you pick up and type on: dragged apps, folders, search, sheets and the keyboard.
+  There are no glass boxes or round glass buttons at rest.
 
 ## Features
 
 ### Home
-- Calm water over the day's painting. The waterline sits at your battery level, with a label such as
-  "Fast charging · 62%" riding on it.
-- Touch makes ripples, and tilting sloshes the water. The painting shifts slightly against your tilt, so the
-  screen has real depth.
-- Long-press the water to change the painting: the old one sinks and the new one surfaces.
-- Your favourite apps sit on a glass dock that floats on the water.
-- Opening an app drops a glass drop into the water, and the app opens out of the splash.
+- The day's painting hangs in full colour in a walnut frame on a dark gallery wall, with a museum label: title,
+  artist, year and museum.
+- The room is flooded. The waterline crosses the lower part of the frame and bends it, and your favourite apps
+  sit under the water as plain text.
+- After you unlock, one ripple spreads across the screen. A slow swell and drifting caustics play for a few
+  seconds after a touch, then the water goes completely still.
+- Press an app and its name rises out of the water while a ring spreads from your finger; it drops back with a
+  small splash and the app opens.
+- Tilting moves the water and shifts the painting slightly, so the screen has depth.
+- Long-press the water to change the painting: the old one sinks and the new one rises.
 
 ### Folders and notifications
 - **Folders:** hold an app and drag it onto another; the two drops merge into a folder. Tap the folder to pop
   it open. Drag an app out and it stretches, snaps and drips back into the water.
-- **Notification bubbles:** each notification rises from the USB port as a glass bubble with the app's icon
-  inside. You can grab, drag and flick bubbles. Bubbles from different apps bounce off each other like balls;
+- **Notification bubbles:** each notification rises from the USB port as the app's own flat icon in a thin
+  ring of water, with the count underneath. You can grab, drag and flick bubbles. Bubbles from different apps bounce off each other like balls;
   bubbles from the same app merge. Tap one to open it as a frosted card, or flick it off the bottom to
   dismiss it.
 
@@ -61,8 +72,8 @@
   - **Filling glass:** a drop on the fingerprint spot fills with liquid light.
   - **Light thread:** a glowing rope that sways and snaps.
   - **Clock fill:** the clock digits fill with liquid.
-- **Charging text:** "Slow charging", "Charging", "Fast charging", "Charging rapidly" or "Charged", worked out
-  from the real charging current.
+- **Charging text:** the charger tier HyperOS reports ("Charging", "Quick charging", "Fast charging" or
+  "Super fast charging · 90W") with the battery percentage.
 - **Show-off:** hold two fingers on the lock screen to play the Flood without a charger.
 
 ### Haptics
@@ -94,7 +105,7 @@ the daily painting. See the [Quiet README](https://github.com/devesh1905/quiet-l
 ### Battery
 
 The water only animates while something moves: a touch, a tilt, a notification or a level change.
-- After that, it shimmers at 30 fps for 3 s, then stops completely: no frames, no timers.
+- After that, a slow swell plays at about 25 fps for a few seconds, then it stops completely: no frames, no timers.
 - The gravity sensor runs only while the water is moving; otherwise a low-power accelerometer at 5 Hz watches
   for movement.
 - Reduced motion or battery saver gives a single still frame.
